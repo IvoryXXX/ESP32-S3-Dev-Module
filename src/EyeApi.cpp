@@ -21,6 +21,15 @@ static void dieBlink(const char* msg) {
   }
 }
 
+// ----- Patch 2: stav mezi update() a render() -----
+struct EyeFrameState {
+  bool changed = false;
+  int16_t irisX = 0;
+  int16_t irisY = 0;
+};
+static EyeFrameState gFrame;
+// --------------------------------------------------
+
 namespace EyeApi {
 
 void init() {
@@ -36,21 +45,16 @@ void init() {
   if (!sdInit() || !sdIsReady()) dieBlink("[SD] init FAILED");
   Serial.println("[SD] OK");
 
-  // pokus načíst /skins/<skin>/settings.txt (když neexistuje, jedeme dál)
   loadSkinConfigIfExists(cfg.skinDir, cfg);
 
-  // scan assets ve skinu
   if (!skinScanDir(gSkin, cfg.skinDir)) dieBlink("[skin] scan FAILED");
 
-  // init grid z configu (kruh + body)
   EyeGrid::build(cfg.screenW / 2, cfg.screenH / 2,
                  cfg.irisCircleRadiusPx, cfg.stepX, cfg.stepY,
                  cfg.edgeBands);
 
-  // init pupil až PO skin configu
   EyePupil::init(cfg);
 
-  // render init/load
   EyeRenderConfig rc;
   rc.baseW = cfg.screenW;
   rc.baseH = cfg.screenH;
@@ -68,7 +72,6 @@ void init() {
 
   eyeRenderDrawStatic(gSkin);
 
-  // gaze init
   EyeGaze::init(
     cfg.dwellMinMs, cfg.dwellMaxMs,
     cfg.travelTickMinMs, cfg.travelTickMaxMs,
@@ -77,28 +80,34 @@ void init() {
     cfg.edgeBands, cfg.edgeWeightPct, cfg.edgeSoft
   );
 
+  gFrame.changed = false;
+  gFrame.irisX = (int16_t)EyeGaze::x();
+  gFrame.irisY = (int16_t)EyeGaze::y();
+
   Serial.println("[READY]");
 }
 
 void update(uint32_t dtMs) {
-  (void)dtMs; // zachováváme původní chování (čas bere EyeGaze z millis())
+  (void)dtMs; // zachováme původní časování (EyeGaze bere millis())
 
   TftManager::showAliveTick(millis());
 
   const uint32_t now = millis();
-
-  bool changed = EyeGaze::update(now);
-  if (changed) {
-    eyeRenderDrawIris(EyeGaze::x(), EyeGaze::y(), gSkin);
+  gFrame.changed = EyeGaze::update(now);
+  if (gFrame.changed) {
+    gFrame.irisX = (int16_t)EyeGaze::x();
+    gFrame.irisY = (int16_t)EyeGaze::y();
   }
-
-  delay(5);
 }
 
 void render() {
-  // Patch 1: render krok byl původně "inline" v loop() při changed.
-  // Aby se nezměnilo chování, necháváme render() prázdné.
-  // Patch 2: přesuneme kreslení sem a update bude jen počítat stav.
+  if (gFrame.changed) {
+    eyeRenderDrawIris(gFrame.irisX, gFrame.irisY, gSkin);
+    gFrame.changed = false;
+  }
+
+  // zachováme pacing jako dřív
+  delay(5);
 }
 
 } // namespace EyeApi
