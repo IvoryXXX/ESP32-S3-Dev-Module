@@ -1,266 +1,183 @@
 #include "render_eye.h"
-#include "debug_grid.h"
+
+// DŮLEŽITÉ: render může sahat na TftManager jen přes _render_internal.h,
+// který definuje RENDERER_CAN_DRAW.
 #include "_render_internal.h"
-#include "config.h"      // cfg.dbgOverlay (optional debug)
-#include <SD.h>
 
+#include <Arduino.h>
+#include <stdlib.h>
+#include <string.h>
 
-// --- Debug overlay callbacks (renderer owns TFT access) ---
-static void _dbgDrawPixel(void* ctx, int x, int y, uint16_t c) {
-  (void)ctx;
-  TftManager::tft().drawPixel(x, y, c);
-}
-static void _dbgDrawRect(void* ctx, int x, int y, int w, int h, uint16_t c) {
-  (void)ctx;
-  TftManager::tft().drawRect(x, y, w, h, c);
-}
-static void _dbgDrawCircle(void* ctx, int x, int y, int r, uint16_t c) {
-  (void)ctx;
-  TftManager::tft().drawCircle(x, y, r, c);
-}
-static void _dbgDrawLine(void* ctx, int x0, int y0, int x1, int y1, uint16_t c) {
-  (void)ctx;
-  TftManager::tft().drawLine(x0, y0, x1, y1, c);
-}
-#include "eye_pupil.h"   // <-- PUPIL V1.1
+static EyeRenderConfig gCfg;
 
-static EyeRenderConfig gRender;
+// buffery
+static uint16_t* baseBuf = nullptr;
+static uint16_t* irisBuf = nullptr;
+static uint16_t* topOpenBuf = nullptr;
+static uint16_t* botOpenBuf = nullptr;
 
-// asset buffery (RAW565)
-static uint16_t* baseBuf     = nullptr;  // baseW*baseH
-static uint16_t* irisBuf     = nullptr;  // irisW*irisH
-static uint16_t* topOpenBuf  = nullptr;  // topOpenW*topOpenH (optional)
-static uint16_t* botOpenBuf  = nullptr;  // botOpenW*botOpenH (optional)
+// dočasný patch pro iris kompozici
+static uint16_t* irisPatch = nullptr;
 
-// scratch (na patchy: iris patch, nebo lid patch)
-static uint16_t* scratchBuf  = nullptr;
-static size_t    scratchCap  = 0;        // počet uint16_t
-
-static bool baseLoaded = false;
-static bool irisLoaded = false;
-
-static int lastX0 = 999999;
-static int lastY0 = 999999;
-
-static inline uint16_t baseAt(int x, int y) {
-  if (!baseBuf) return 0;
-  if (x < 0 || y < 0 || x >= gRender.baseW || y >= gRender.baseH) return 0;
-  return baseBuf[(size_t)y * (size_t)gRender.baseW + (size_t)x];
+static inline void freeIf(void*& p) {
+  if (p) { free(p); p = nullptr; }
 }
 
-static inline void unpack565(uint16_t c, int &r, int &g, int &b) {
-  r = (c >> 11) & 0x1F;
-  g = (c >> 5)  & 0x3F;
-  b = (c >> 0)  & 0x1F;
-}
+// ---- RAW565 loader z SD (Patch 9 styl) ----
+static bool loadRaw565(const char* path, uint16_t* dst, unsigned int pixelCount) {
+  if (!path || !dst || pixelCount == 0) return false;
 
-static bool isKeyLike(uint16_t p) {
-  if (!gRender.useKey) return false;
+  File f = SD.open(path, "r");
+  if (!f) {
+    Serial.printf("[RAW] open FAIL: %s\n", path);
+    return false;
+  }
 
-  int r,gc,b;
-  int kr,kg,kb;
-  unpack565(p,  r,  gc,  b);
-  unpack565(gRender.keyColor565, kr, kg, kb);
+  const size_t bytes = (size_t)pixelCount * 2;
+  size_t got = f.read((uint8_t*)dst, bytes);
+  f.close();
 
-  int dr = abs(r  - kr);
-  int dg = abs(gc - kg);
-  int db = abs(b  - kb);
-
-  return (dr <= gRender.tolR) && (dg <= gRender.tolG) && (db <= gRender.tolB);
-}
-
-static bool ensureScratch(size_t needCount) {
-  if (scratchCap >= needCount && scratchBuf) return true;
-  if (scratchBuf) { free(scratchBuf); scratchBuf = nullptr; scratchCap = 0; }
-
-  scratchBuf = (uint16_t*)malloc(needCount * sizeof(uint16_t));
-  if (!scratchBuf) return false;
-  scratchCap = needCount;
+  if (got != bytes) {
+    Serial.printf("[RAW] read FAIL %s got=%u need=%u\n", path, (unsigned)got, (unsigned)bytes);
+    return false;
+  }
   return true;
 }
 
-static bool loadRaw565(const char* path, uint16_t* dst, size_t countU16) {
-  File f = SD.open(path, FILE_READ);
-  if (!f) return false;
-  size_t needBytes = countU16 * sizeof(uint16_t);
-  size_t got = f.read((uint8_t*)dst, needBytes);
-  f.close();
-  return (got == needBytes);
-}
-
-void eyeRenderSetKey(bool useKey, uint16_t keyColor565, uint8_t tolR, uint8_t tolG, uint8_t tolB) {
-  gRender.useKey = useKey;
-  gRender.keyColor565 = keyColor565;
-  gRender.tolR = tolR;
-  gRender.tolG = tolG;
-  gRender.tolB = tolB;
+// otevřená víčka overlay (Patch 9 logika)
+static void overlayOpenLidsIfAny(const SkinAssets& skin) {
+  if (topOpenBuf && skin.topOpen.w > 0 && skin.topOpen.h > 0) {
+    TftManager::pushRGB565(skin.topOpen.x(), skin.topOpen.y(),
+                           skin.topOpen.w, skin.topOpen.h,
+                           topOpenBuf, gCfg.swapBytes);
+  }
+  if (botOpenBuf && skin.botOpen.w > 0 && skin.botOpen.h > 0) {
+    TftManager::pushRGB565(skin.botOpen.x(), skin.botOpen.y(),
+                           skin.botOpen.w, skin.botOpen.h,
+                           botOpenBuf, gCfg.swapBytes);
+  }
 }
 
 void eyeRenderInit(const EyeRenderConfig& cfg) {
-  gRender = cfg;
+  gCfg = cfg;
 }
 
 bool eyeRenderLoadAssets(const SkinAssets& skin) {
-  baseLoaded = false;
-  irisLoaded = false;
+  // uvolni případné staré
+  freeIf((void*&)baseBuf);
+  freeIf((void*&)irisBuf);
+  freeIf((void*&)topOpenBuf);
+  freeIf((void*&)botOpenBuf);
+  freeIf((void*&)irisPatch);
 
-  if (!ensureScratch((size_t)gRender.irisW * (size_t)gRender.irisH)) return false;
+  const size_t basePix = (size_t)skin.base.w * (size_t)skin.base.h;
+  const size_t irisPix = (size_t)skin.iris.w * (size_t)skin.iris.h;
 
-  if (!baseBuf) baseBuf = (uint16_t*)malloc((size_t)gRender.baseW * (size_t)gRender.baseH * sizeof(uint16_t));
-  if (!irisBuf) irisBuf = (uint16_t*)malloc((size_t)gRender.irisW * (size_t)gRender.irisH * sizeof(uint16_t));
+  if (!basePix || !irisPix) return false;
 
-  if (!baseBuf || !irisBuf) return false;
+  baseBuf = (uint16_t*)malloc(basePix * 2);
+  irisBuf = (uint16_t*)malloc(irisPix * 2);
+  irisPatch = (uint16_t*)malloc(irisPix * 2);
 
-  if (!loadRaw565(skin.base.path.c_str(), baseBuf, (size_t)gRender.baseW*(size_t)gRender.baseH)) return false;
-  if (!loadRaw565(skin.iris.path.c_str(), irisBuf, (size_t)gRender.irisW*(size_t)gRender.irisH)) return false;
+  if (!baseBuf || !irisBuf || !irisPatch) {
+    Serial.println("[render] malloc FAIL");
+    return false;
+  }
 
-  baseLoaded = true;
-  irisLoaded = true;
+  if (!loadRaw565(skin.base.path.c_str(), baseBuf, (unsigned int)basePix)) return false;
+  if (!loadRaw565(skin.iris.path.c_str(), irisBuf, (unsigned int)irisPix)) return false;
 
-  // optional lids
-  if (skin.topOpen.found) {
-    if (!topOpenBuf) topOpenBuf = (uint16_t*)malloc((size_t)skin.topOpen.w * (size_t)skin.topOpen.h * sizeof(uint16_t));
+  if (skin.topOpen.w > 0 && skin.topOpen.h > 0 && skin.topOpen.path.length() > 0) {
+    const size_t n = (size_t)skin.topOpen.w * (size_t)skin.topOpen.h;
+    topOpenBuf = (uint16_t*)malloc(n * 2);
     if (!topOpenBuf) return false;
-    if (!loadRaw565(skin.topOpen.path.c_str(), topOpenBuf, (size_t)skin.topOpen.w*(size_t)skin.topOpen.h)) return false;
-  }
-  if (skin.botOpen.found) {
-    if (!botOpenBuf) botOpenBuf = (uint16_t*)malloc((size_t)skin.botOpen.w * (size_t)skin.botOpen.h * sizeof(uint16_t));
-    if (!botOpenBuf) return false;
-    if (!loadRaw565(skin.botOpen.path.c_str(), botOpenBuf, (size_t)skin.botOpen.w*(size_t)skin.botOpen.h)) return false;
+    if (!loadRaw565(skin.topOpen.path.c_str(), topOpenBuf, (unsigned int)n)) return false;
   }
 
-  lastX0 = 999999;
-  lastY0 = 999999;
+  if (skin.botOpen.w > 0 && skin.botOpen.h > 0 && skin.botOpen.path.length() > 0) {
+    const size_t n = (size_t)skin.botOpen.w * (size_t)skin.botOpen.h;
+    botOpenBuf = (uint16_t*)malloc(n * 2);
+    if (!botOpenBuf) return false;
+    if (!loadRaw565(skin.botOpen.path.c_str(), botOpenBuf, (unsigned int)n)) return false;
+  }
+
+  Serial.println("[render] assets OK");
   return true;
 }
 
-static void overlayLidIfHit(int px, int py, int pw, int ph,
-                            const AssetInfo& lid, const uint16_t* lidBuf) {
-  if (!lid.found || !lidBuf) return;
-
-  int lx = lid.x();
-  int ly = lid.y();
-  int lw = lid.w;
-  int lh = lid.h;
-
-  // průnik patch vs lid rect
-  int ix0 = max(px, lx);
-  int iy0 = max(py, ly);
-  int ix1 = min(px + pw, lx + lw);
-  int iy1 = min(py + ph, ly + lh);
-
-  if (ix1 <= ix0 || iy1 <= iy0) return;
-
-  int iw = ix1 - ix0;
-  int ih = iy1 - iy0;
-
-  for (int y = 0; y < ih; y++) {
-    int sy = iy0 + y;
-    int lidY = sy - ly;
-    int locY = sy - py;
-
-    size_t lidRow = (size_t)lidY * (size_t)lw;
-    size_t dstRow = (size_t)locY * (size_t)pw;
-
-    for (int x = 0; x < iw; x++) {
-      int sx = ix0 + x;
-      int lidX = sx - lx;
-      int locX = sx - px;
-
-      uint16_t lp = lidBuf[lidRow + (size_t)lidX];
-      if (!isKeyLike(lp)) {
-        scratchBuf[dstRow + (size_t)locX] = lp;
-      }
-    }
-  }
-}
-
-static void composePatchAndPush(int px, int py, int pw, int ph, bool includeIris, const SkinAssets* skinOpt) {
-  if (!ensureScratch((size_t)pw * (size_t)ph)) return;
-
-  // 1) base do scratch
-  for (int y = 0; y < ph; y++) {
-    int sy = py + y;
-    for (int x = 0; x < pw; x++) {
-      int sx = px + x;
-      scratchBuf[(size_t)y * (size_t)pw + (size_t)x] = baseAt(sx, sy);
-    }
-  }
-
-  // 2) iris overlay (keying)
-  if (includeIris && irisBuf) {
-    for (int y = 0; y < ph; y++) {
-      for (int x = 0; x < pw; x++) {
-        if (x < gRender.irisW && y < gRender.irisH) {
-          uint16_t ip = irisBuf[(size_t)y * (size_t)gRender.irisW + (size_t)x];
-          if (!isKeyLike(ip)) scratchBuf[(size_t)y * (size_t)pw + (size_t)x] = ip;
-        }
-      }
-    }
-
-    // 2.1) PUPIL do iris patch (V1.1) – po irisu, před víčkama
-    EyePupil::drawIntoPatch(scratchBuf, pw, ph);
-  }
-
-  // 3) víčka nad irisem – jen lokálně, pokud patch protíná open-lid rect
-  if (skinOpt) {
-    overlayLidIfHit(px, py, pw, ph, skinOpt->topOpen, topOpenBuf);
-    overlayLidIfHit(px, py, pw, ph, skinOpt->botOpen, botOpenBuf);
-  }
-
-  // 4) push patch na TFT
-  TFT_eSPI &tft = TftManager::tft();
-  tft.pushImage(px, py, pw, ph, scratchBuf);
-}
-
 void eyeRenderDrawStatic(const SkinAssets& skin) {
-  if (!baseLoaded || !baseBuf) return;
-
-  TFT_eSPI &tft = TftManager::tft();
-  tft.pushImage(0, 0, gRender.baseW, gRender.baseH, baseBuf);
-
-  // open lids (pokud existují) – kreslíme KEYED (magenta=průhledná)
-  // Pozn.: TFT_eSPI pushImage neumí keying, proto si vyrobíme patch (base + lid s klíčem)
-  if (skin.topOpen.found && topOpenBuf) {
-    composePatchAndPush(skin.topOpen.x(), skin.topOpen.y(), skin.topOpen.w, skin.topOpen.h, false, &skin);
-  }
-  if (skin.botOpen.found && botOpenBuf) {
-    composePatchAndPush(skin.botOpen.x(), skin.botOpen.y(), skin.botOpen.w, skin.botOpen.h, false, &skin);
-  }
-
-  lastX0 = 999999;
-  lastY0 = 999999;
+  if (!baseBuf) return;
+  TftManager::pushRGB565(0, 0, skin.base.w, skin.base.h, baseBuf, gCfg.swapBytes);
+  overlayOpenLidsIfAny(skin);
 }
 
-void eyeRenderDrawIris(int centerX, int centerY, const SkinAssets& skin) {
-  if (!baseLoaded || !irisLoaded || !baseBuf || !irisBuf) return;
+// Překreslení jen patch oblasti irisu (Patch 9 logika):
+// 1) z baseBuf vyřízni patch do irisPatch
+// 2) přepiš ho pixely irisu s colorkey (magenta = průhledná)
+// 3) push patch na TFT
+static void composePatchAndPush(int irisX, int irisY, const SkinAssets& skin) {
+  if (!baseBuf || !irisBuf || !irisPatch) return;
 
-  const int x0 = centerX - gRender.irisW / 2;
-  const int y0 = centerY - gRender.irisH / 2;
+  const int baseW = skin.base.w;
+  const int baseH = skin.base.h;
+  const int irisW = skin.iris.w;
+  const int irisH = skin.iris.h;
 
-  // 1) smaž starý iris: obnov base patch + (pokud byl průnik) lokálně dokresli víčka
-  if (lastX0 != 999999) {
-    composePatchAndPush(lastX0, lastY0, gRender.irisW, gRender.irisH, false, &skin);
+  // tl = levý horní roh irisu (stejně jako Patch 9)
+  const int tlx = irisX - irisW / 2;
+  const int tly = irisY - irisH / 2;
+
+  // kopie base do patch
+  for (int y = 0; y < irisH; y++) {
+    int by = tly + y;
+    if (by < 0 || by >= baseH) continue;
+
+    uint16_t* dstRow = irisPatch + (size_t)y * (size_t)irisW;
+    const uint16_t* srcRow = baseBuf + (size_t)by * (size_t)baseW;
+
+    for (int x = 0; x < irisW; x++) {
+      int bx = tlx + x;
+      if (bx < 0 || bx >= baseW) continue;
+      dstRow[x] = srcRow[bx];
+    }
   }
 
-  // 2) nový iris: base patch + iris + pupil + (pokud průnik) lokálně víčka nad irisem
-  // Pozn.: potřebujeme SkinAssets pro overlay lids. Tady to řešíme přes gRender.lastSkin? -> jednoduché:
-  // render_eye.h už typicky předává SkinAssets do drawStatic/loadAssets; iris draw nemá skin param.
-  // Takže vezmeme kompromis: víčka se lokálně NEoverlayují (nebo si sem doplníš pointer).
-  // Pokud chceš 100%: uprav render API tak, aby eyeRenderDrawIris dostal i SkinAssets*.
-  composePatchAndPush(x0, y0, gRender.irisW, gRender.irisH, true, &skin);
+  // iris overlay (magenta key)
+  for (int y = 0; y < irisH; y++) {
+    uint16_t* dstRow = irisPatch + (size_t)y * (size_t)irisW;
+    const uint16_t* irRow = irisBuf + (size_t)y * (size_t)irisW;
 
-  lastX0 = x0;
-  lastY0 = y0;
+    for (int x = 0; x < irisW; x++) {
+      uint16_t px = irRow[x];
+      if (px == gCfg.keyColor565) continue;
+      dstRow[x] = px;
+    }
+  }
 
-  // debug overlay (jen přes renderer)
+  TftManager::pushRGB565(tlx, tly, irisW, irisH, irisPatch, gCfg.swapBytes);
+}
+
+void eyeRenderDrawIris(int irisX, int irisY, const SkinAssets& skin) {
+  composePatchAndPush(irisX, irisY, skin);
+
+  // DŮLEŽITÉ: po každém push irisu obnov víčka,
+  // jinak iris „přejede“ do jejich oblasti.
+  overlayOpenLidsIfAny(skin);
+
+  // debug overlay (pokud je zapnutý) – volá se přes debug_grid modul
   if (cfg.dbgOverlay) {
-    DebugGridCallbacks cb;
+    DebugGridCallbacks cb{};
     cb.ctx = nullptr;
-    cb.drawPixel  = _dbgDrawPixel;
-    cb.drawRect   = _dbgDrawRect;
-    cb.drawCircle = _dbgDrawCircle;
-    cb.drawLine   = _dbgDrawLine;
+    cb.drawPixel = [](void*, int x, int y, uint16_t c){ TftManager::drawPixel(x, y, c); };
+    cb.drawRect  = [](void*, int x, int y, int w, int h, uint16_t c){ TftManager::drawRect(x, y, w, h, c); };
+    cb.drawLine  = [](void*, int x0, int y0, int x1, int y1, uint16_t c){ TftManager::drawLine(x0, y0, x1, y1, c); };
+    cb.drawCircle= [](void*, int x, int y, int r, uint16_t c){ TftManager::drawCircle(x, y, r, c); };
     debugGridRenderOverlay(cb);
   }
+}
+
+void eyeRenderDrawLids(uint16_t /*lidTop*/, uint16_t /*lidBot*/, const SkinAssets& skin) {
+  // Patch 10: zatím žádné „zavřené“ víčka.
+  // Jen zajistíme, že se otevřená víčka kdykoli znovu přepíšou přes iris.
+  overlayOpenLidsIfAny(skin);
 }
