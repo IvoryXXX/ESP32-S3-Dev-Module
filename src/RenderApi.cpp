@@ -1,29 +1,24 @@
 #include "RenderApi.h"
-#include "render_eye.h"
-#include "TftManager.h"
 
-struct EyeRenderState {
-  // musí být shodná definice jako v EyeApi.cpp
-  // (v Patch 2 to dáme do společného headeru, zatím to držíme jednoduché)
-};
+#include "render_eye.h"
+#include "skin_assets.h"   // definuje SkinAssets
+
+static const SkinAssets* gSkin = nullptr;
 
 namespace RenderApi {
 
-void init() {
-  // TftManager::init();
-  // render_eye init, boot screen, cokoliv máš dnes
+void init(const SkinAssets& skin) {
+  gSkin = &skin;
 }
 
-void beginFrame() {
-  // případně žádná práce, nebo “start DMA”, nebo “set viewport”
+void drawStatic() {
+  if (!gSkin) return;
+  eyeRenderDrawStatic(*gSkin);
 }
 
-void draw(const EyeRenderState& s) {
-  // zavolej tvoje existující render funkce a předej data ze s
+void drawIris(int16_t irisX, int16_t irisY) {
+  if (!gSkin) return;
+  eyeRenderDrawIris(irisX, irisY, *gSkin);
 }
 
-void endFrame() {
-  // flush / DMA wait / swap
-}
-
-}
+} // namespace RenderApi

@@ -1,11 +1,10 @@
 #pragma once
 #include <stdint.h>
 
-struct EyeRenderState; // doplníme v EyeApi.cpp (ne tady)
+struct SkinAssets; // forward declaration
 
 namespace RenderApi {
-  void init();                 // init TFT + renderer
-  void beginFrame();
-  void draw(const EyeRenderState& s);
-  void endFrame();
+  void init(const SkinAssets& skin);
+  void drawStatic();
+  void drawIris(int16_t irisX, int16_t irisY);
 }

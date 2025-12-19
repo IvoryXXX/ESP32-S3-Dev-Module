@@ -11,6 +11,7 @@
 #include "eye_gaze.h"
 #include "eye_pupil.h"
 #include "TftManager.h" // init + boot screen + alive tick
+#include "RenderApi.h"
 
 static SkinAssets gSkin;
 
@@ -70,7 +71,9 @@ void init() {
   eyeRenderInit(rc);
   if (!eyeRenderLoadAssets(gSkin)) dieBlink("[render] load assets FAILED");
 
-  eyeRenderDrawStatic(gSkin);
+  RenderApi::init(gSkin);
+  RenderApi::drawStatic();
+
 
   EyeGaze::init(
     cfg.dwellMinMs, cfg.dwellMaxMs,
@@ -102,7 +105,8 @@ void update(uint32_t dtMs) {
 
 void render() {
   if (gFrame.changed) {
-    eyeRenderDrawIris(gFrame.irisX, gFrame.irisY, gSkin);
+    RenderApi::drawIris(gFrame.irisX, gFrame.irisY);
+
     gFrame.changed = false;
   }
 
