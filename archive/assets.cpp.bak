@@ -1,0 +1,223 @@
+#if 0
+// legacy file - disabled (replaced by skin_assets + render_eye)
+#endif
+
+#include "assets.h"
+#include <SD.h>
+#include "tft_manager.h"
+
+// jednoduchý “asset pool”
+static RawImage g_imgs[64];
+static uint32_t g_count = 0;
+
+static bool isRawFile(const String& n) {
+  return n.endsWith(".raw") || n.endsWith(".RAW");
+}
+
+uint32_t Assets::count() {
+  return g_count;
+}
+
+void Assets::freeAll() {
+  for (uint32_t i = 0; i < g_count; i++) {
+    if (g_imgs[i].pixels) {
+      free(g_imgs[i].pixels);
+      g_imgs[i].pixels = nullptr;
+    }
+  }
+  g_count = 0;
+}
+
+static String joinPath(const char* dir, const String& name) {
+  String d(dir);
+  if (!d.startsWith("/")) d = "/" + d;
+  if (d.endsWith("/")) return d + name;
+  return d + "/" + name;
+}
+
+bool Assets::parseMetaFromFilename(const String& filename, RawImage& out) {
+  // očekáváme něco jako: iris_66x70_L87_T83_R87_B87.raw
+  // - w x h z "_66x70_"
+  // - x/y z "_L87_T83_"
+
+  int ix = filename.indexOf('_');
+  if (ix < 0) return false;
+
+  // find pattern _<w>x<h>_
+  int xPos = filename.indexOf('x');
+  if (xPos < 0) return false;
+
+  // hledáme čísla okolo 'x'
+  // vezmeme poslední '_' před w
+  int usBeforeW = filename.lastIndexOf('_', xPos);
+  if (usBeforeW < 0) return false;
+
+  // w je mezi usBeforeW+1 a xPos-1
+  String wStr = filename.substring(usBeforeW + 1, xPos);
+
+  // h je mezi xPos+1 a další '_'
+  int usAfterH = filename.indexOf('_', xPos);
+  if (usAfterH < 0) return false;
+
+  String hStr = filename.substring(xPos + 1, usAfterH);
+
+  int w = wStr.toInt();
+  int h = hStr.toInt();
+  if (w <= 0 || h <= 0) return false;
+
+  out.w = w;
+  out.h = h;
+
+  // L a T (pozice)
+  auto findTag = [&](const char tag, int& valOut) -> bool {
+    String pat = String("_") + tag;
+    int p = filename.indexOf(pat);
+    if (p < 0) return false;
+    p += 2; // skip "_X"
+    int end = p;
+    while (end < (int)filename.length() && isDigit(filename[end])) end++;
+    if (end == p) return false;
+    valOut = filename.substring(p, end).toInt();
+    return true;
+  };
+
+  int L = 0, T = 0;
+  findTag('L', L);
+  findTag('T', T);
+  out.x = L;
+  out.y = T;
+
+  return true;
+}
+
+bool Assets::loadRawFileToRam(const String& fullPath, RawImage& out) {
+  Serial.printf("[RAW] open %s\n", fullPath.c_str());
+  File f = SD.open(fullPath, FILE_READ);
+  if (!f) {
+    Serial.println("[RAW] FAIL open");
+    return false;
+  }
+
+  size_t bytes = f.size();
+  size_t expected = (size_t)out.w * (size_t)out.h * 2;
+
+  Serial.printf("[RAW] size=%u (expected %u)\n", (unsigned)bytes, (unsigned)expected);
+
+  if (expected == 0 || bytes != expected) {
+    Serial.println("[RAW] FAIL size mismatch");
+    f.close();
+    return false;
+  }
+
+  out.pixels = (uint16_t*)malloc(bytes);
+  if (!out.pixels) {
+    Serial.println("[RAW] FAIL malloc");
+    f.close();
+    return false;
+  }
+
+  size_t rd = f.read((uint8_t*)out.pixels, bytes);
+  f.close();
+
+  if (rd != bytes) {
+    Serial.println("[RAW] FAIL read");
+    free(out.pixels);
+    out.pixels = nullptr;
+    return false;
+  }
+
+  Serial.println("[RAW] loaded to RAM OK");
+  return true;
+}
+
+bool Assets::loadAllRawFromDir(const char* dir) {
+  freeAll();
+
+  File d = SD.open(dir);
+  if (!d || !d.isDirectory()) {
+    Serial.println("[ASSETS] FAIL open dir");
+    return false;
+  }
+
+  while (true) {
+    File entry = d.openNextFile();
+    if (!entry) break;
+
+    String name = entry.name();
+    bool isDir = entry.isDirectory();
+    entry.close();
+
+    if (isDir) continue;
+    if (!isRawFile(name)) continue;
+
+    if (g_count >= (sizeof(g_imgs) / sizeof(g_imgs[0]))) {
+      Serial.println("[ASSETS] pool full");
+      break;
+    }
+
+    RawImage& img = g_imgs[g_count];
+    img = RawImage(); // reset
+    img.name = name;
+    img.path = joinPath(dir, name);
+
+    if (!parseMetaFromFilename(name, img)) {
+      Serial.printf("[ASSETS] skip (bad filename meta): %s\n", name.c_str());
+      continue;
+    }
+
+    if (!loadRawFileToRam(img.path, img)) {
+      Serial.printf("[ASSETS] skip (load fail): %s\n", name.c_str());
+      continue;
+    }
+
+    g_count++;
+  }
+
+  d.close();
+  return (g_count > 0);
+}
+
+RawImage* Assets::findByNameContains(const char* needle) {
+  for (uint32_t i = 0; i < g_count; i++) {
+    if (g_imgs[i].name.indexOf(needle) >= 0) return &g_imgs[i];
+  }
+  return nullptr;
+}
+
+void Assets::drawComposedEye() {
+  // Heuristiky podle názvů – upravíme později na “manifest/config”, ale teď to funguje bez ručního psaní.
+  RawImage* base = findByNameContains("base");
+  if (!base) base = findByNameContains("eye_base");
+  if (!base) base = findByNameContains("bulva");
+
+  RawImage* iris = findByNameContains("iris_");
+
+  RawImage* topOpen = findByNameContains("top_lid_open");
+  RawImage* botOpen = findByNameContains("bot_lid_open");
+
+  // (zatím nepoužité, ale připravené)
+  RawImage* topClosed = findByNameContains("top_lid_closed");
+  RawImage* botClosed = findByNameContains("bot_lid_closed");
+
+  // 1) pozadí/bulva
+  if (base && base->pixels) {
+    TftManager::pushRGB565(base->x, base->y, base->w, base->h, base->pixels, true);
+  }
+
+  // 2) iris
+  if (iris && iris->pixels) {
+    TftManager::pushRGB565(iris->x, iris->y, iris->w, iris->h, iris->pixels, true);
+  }
+
+  // 3) otevřená víčka
+  if (topOpen && topOpen->pixels) {
+    TftManager::pushRGB565(topOpen->x, topOpen->y, topOpen->w, topOpen->h, topOpen->pixels, true);
+  }
+  if (botOpen && botOpen->pixels) {
+    TftManager::pushRGB565(botOpen->x, botOpen->y, botOpen->w, botOpen->h, botOpen->pixels, true);
+  }
+
+  // 4) zavřená víčka (zatím vypnuté – až budeš chtít, jen odkomentuj)
+  (void)topClosed;
+  (void)botClosed;
+}
