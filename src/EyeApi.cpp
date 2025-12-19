@@ -6,12 +6,11 @@
 #include "sd_manager.h"
 #include "skin_assets.h"
 #include "skin_config.h"
-#include "render_eye.h"
 #include "eye_grid.h"
 #include "eye_gaze.h"
 #include "eye_pupil.h"
-#include "TftManager.h" // init + boot screen + alive tick
-#include "RenderApi.h"
+#include "TftManager.h"
+#include "RenderApi.h"   // Patch 4: renderer init/load/draw jde přes RenderApi
 
 static SkinAssets gSkin;
 
@@ -22,14 +21,13 @@ static void dieBlink(const char* msg) {
   }
 }
 
-// ----- Patch 2: stav mezi update() a render() -----
+// Patch 2: stav mezi update() a render()
 struct EyeFrameState {
   bool changed = false;
   int16_t irisX = 0;
   int16_t irisY = 0;
 };
 static EyeFrameState gFrame;
-// --------------------------------------------------
 
 namespace EyeApi {
 
@@ -46,35 +44,27 @@ void init() {
   if (!sdInit() || !sdIsReady()) dieBlink("[SD] init FAILED");
   Serial.println("[SD] OK");
 
+  // pokus načíst /skins/<skin>/settings.txt (když neexistuje, jedeme dál)
   loadSkinConfigIfExists(cfg.skinDir, cfg);
 
+  // scan assets ve skinu
   if (!skinScanDir(gSkin, cfg.skinDir)) dieBlink("[skin] scan FAILED");
 
+  // init grid z configu (kruh + body)
   EyeGrid::build(cfg.screenW / 2, cfg.screenH / 2,
                  cfg.irisCircleRadiusPx, cfg.stepX, cfg.stepY,
                  cfg.edgeBands);
 
+  // init pupil až PO skin configu
   EyePupil::init(cfg);
 
-  EyeRenderConfig rc;
-  rc.baseW = cfg.screenW;
-  rc.baseH = cfg.screenH;
-  rc.irisW = gSkin.iris.w;
-  rc.irisH = gSkin.iris.h;
-
-  rc.useKey = cfg.useKey;
-  rc.keyColor565 = cfg.keyColor565;
-  rc.tolR = cfg.keyTolR;
-  rc.tolG = cfg.keyTolG;
-  rc.tolB = cfg.keyTolB;
-
-  eyeRenderInit(rc);
-  if (!eyeRenderLoadAssets(gSkin)) dieBlink("[render] load assets FAILED");
-
+  // Patch 4: render init/load přes RenderApi
   RenderApi::init(gSkin);
+  RenderApi::setupRendererFromConfig();
+  if (!RenderApi::loadAssets()) dieBlink("[render] load assets FAILED");
   RenderApi::drawStatic();
 
-
+  // gaze init
   EyeGaze::init(
     cfg.dwellMinMs, cfg.dwellMaxMs,
     cfg.travelTickMinMs, cfg.travelTickMaxMs,
@@ -91,7 +81,7 @@ void init() {
 }
 
 void update(uint32_t dtMs) {
-  (void)dtMs; // zachováme původní časování (EyeGaze bere millis())
+  (void)dtMs; // zachováváme původní chování (čas bere EyeGaze z millis())
 
   TftManager::showAliveTick(millis());
 
@@ -106,7 +96,6 @@ void update(uint32_t dtMs) {
 void render() {
   if (gFrame.changed) {
     RenderApi::drawIris(gFrame.irisX, gFrame.irisY);
-
     gFrame.changed = false;
   }
 
