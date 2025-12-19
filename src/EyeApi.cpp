@@ -9,8 +9,8 @@
 #include "eye_pupil.h"
 #include "TftManager.h"
 
-#include "RenderApi.h"
 #include "AssetsApi.h"
+#include "RenderApi.h"
 #include "EyeFrame.h"
 #include "LidsApi.h"
 
@@ -18,12 +18,9 @@ static SkinAssets gSkin;
 
 static void dieBlink(const char* msg) {
   Serial.println(msg);
-  while (true) {
-    delay(250);
-  }
+  while (true) { delay(250); }
 }
 
-// Patch 6/7: oficiální kontrakt frame
 static EyeFrame gFrame;
 
 namespace EyeApi {
@@ -64,14 +61,15 @@ void init() {
 
   LidsApi::init();
 
-  // init frame
   gFrame.irisX = (int16_t)EyeGaze::x();
   gFrame.irisY = (int16_t)EyeGaze::y();
   gFrame.irisDirty = false;
 
   gFrame.lidTop = 0;
   gFrame.lidBot = 0;
-  gFrame.lidsDirty = false;
+
+  // Patch 8: vynutíme první průchod víček (i když jsou otevřená)
+  gFrame.lidsDirty = true;
 
   Serial.println("[READY]");
 }
@@ -83,7 +81,6 @@ void update(uint32_t dtMs) {
 
   const uint32_t now = millis();
 
-  // gaze -> iris
   const bool irisChanged = EyeGaze::update(now);
   if (irisChanged) {
     gFrame.irisX = (int16_t)EyeGaze::x();
@@ -91,8 +88,6 @@ void update(uint32_t dtMs) {
     gFrame.irisDirty = true;
   }
 
-  // lids -> frame (Patch 7)
-  // LidsApi nastaví lidsDirty, když se něco změnilo
   LidsApi::update(now, gFrame);
 }
 
@@ -103,7 +98,6 @@ void render() {
     gFrame.lidsDirty = false;
   }
 
-  // pacing jako dřív
   delay(5);
 }
 
