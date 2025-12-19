@@ -2,6 +2,8 @@
 #include <Arduino.h>
 
 struct Config {
+  // --- Mrkání ---
+  bool lidsEnabled;   // povolení mrkání / zavřených víček
   // --- SD pins (ESP32-S3, HSPI) ---
   int sdCs   = 4;
   int sdSck  = 13;
@@ -113,6 +115,7 @@ struct Config {
   bool dbgIrisCircle = true;
   bool dbgLidRects   = true;
   bool dbgTarget     = true;
+
 };
 
 extern Config cfg;

@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <stdint.h>
-#include "skin_assets.h"   // <-- aby existoval SkinAssets / SkinRect
+#include "skin_assets.h"   // SkinAssets / SkinRect
 
 struct EyeRenderConfig {
   int baseW = 240;
@@ -20,7 +20,11 @@ struct EyeRenderConfig {
 void eyeRenderInit(const EyeRenderConfig& cfg);
 void eyeRenderSetKey(bool useKey, uint16_t keyColor565, uint8_t tolR, uint8_t tolG, uint8_t tolB);
 
-// NOVÉ API (sedí na main.cpp i render_eye.cpp)
 bool eyeRenderLoadAssets(const SkinAssets& skin);
 void eyeRenderDrawStatic(const SkinAssets& skin);
 void eyeRenderDrawIris(int centerX, int centerY, const SkinAssets& skin);
+
+// Patch 10: nové – vykreslení víček podle procenta zavření (0..1000)
+// topClosePct: 0=open, 1000=full closed
+// botClosePct: 0=open, 1000=full closed
+void eyeRenderDrawLids(uint16_t topClosePct, uint16_t botClosePct, const SkinAssets& skin);

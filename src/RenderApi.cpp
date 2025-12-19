@@ -12,14 +12,16 @@ static DirtyRect gLastDirty;
 
 static void resetDirty() {
   gLastDirty.valid = false;
-  gLastDirty.x = gLastDirty.y = gLastDirty.w = gLastDirty.h = 0;
+  gLastDirty.x = 0;
+  gLastDirty.y = 0;
+  gLastDirty.w = 0;
+  gLastDirty.h = 0;
 }
 
 static void addDirty(int16_t x, int16_t y, int16_t w, int16_t h) {
   if (w <= 0 || h <= 0) return;
 
   if (!gLastDirty.valid) {
-    // FIX: žádné brace assignment
     gLastDirty.x = x;
     gLastDirty.y = y;
     gLastDirty.w = w;
@@ -33,26 +35,25 @@ static void addDirty(int16_t x, int16_t y, int16_t w, int16_t h) {
   int16_t x2 = (int16_t)(gLastDirty.x + gLastDirty.w);
   int16_t y2 = (int16_t)(gLastDirty.y + gLastDirty.h);
 
-  int16_t nx1 = x;
-  int16_t ny1 = y;
-  int16_t nx2 = (int16_t)(x + w);
-  int16_t ny2 = (int16_t)(y + h);
+  if (x < x1) x1 = x;
+  if (y < y1) y1 = y;
+  if (x + w > x2) x2 = (int16_t)(x + w);
+  if (y + h > y2) y2 = (int16_t)(y + h);
 
-  int16_t ux1 = (nx1 < x1) ? nx1 : x1;
-  int16_t uy1 = (ny1 < y1) ? ny1 : y1;
-  int16_t ux2 = (nx2 > x2) ? nx2 : x2;
-  int16_t uy2 = (ny2 > y2) ? ny2 : y2;
-
-  gLastDirty.x = ux1;
-  gLastDirty.y = uy1;
-  gLastDirty.w = (int16_t)(ux2 - ux1);
-  gLastDirty.h = (int16_t)(uy2 - uy1);
+  gLastDirty.x = x1;
+  gLastDirty.y = y1;
+  gLastDirty.w = (int16_t)(x2 - x1);
+  gLastDirty.h = (int16_t)(y2 - y1);
   gLastDirty.valid = true;
 }
 
 namespace RenderApi {
 
-void init(const SkinAssets& skin) { gSkin = &skin; }
+void init(const SkinAssets& skin) {
+  gSkin = &skin;
+  gLidDrawFn = nullptr;
+  resetDirty();
+}
 
 void setupRendererFromConfig() {
   if (!gSkin) return;
@@ -70,6 +71,7 @@ void setupRendererFromConfig() {
   rc.tolB = cfg.keyTolB;
 
   eyeRenderInit(rc);
+  eyeRenderSetKey(rc.useKey, rc.keyColor565, rc.tolR, rc.tolG, rc.tolB);
 }
 
 bool loadAssets() {
@@ -80,16 +82,19 @@ bool loadAssets() {
 void drawStatic() {
   if (!gSkin) return;
   eyeRenderDrawStatic(*gSkin);
+  addDirty(0, 0, (int16_t)cfg.screenW, (int16_t)cfg.screenH);
 }
 
-void drawIris(int16_t irisX, int16_t irisY) {
+void drawIris(int16_t cx, int16_t cy) {
   if (!gSkin) return;
-  eyeRenderDrawIris(irisX, irisY, *gSkin);
-  addDirty(irisX, irisY, (int16_t)gSkin->iris.w, (int16_t)gSkin->iris.h);
+  eyeRenderDrawIris((int)cx, (int)cy, *gSkin);
+
+  // zatím nepočítáme přesně patch; ber full-screen jako bezpečnou variantu
+  addDirty(0, 0, (int16_t)cfg.screenW, (int16_t)cfg.screenH);
 }
 
 void beginFrame() { resetDirty(); }
-void endFrame() {}
+void endFrame()   { /* no-op */ }
 
 void setLidDrawFn(LidDrawFn fn) { gLidDrawFn = fn; }
 
@@ -106,6 +111,7 @@ void renderFrame(const EyeFrame& frame) {
 
   if (frame.lidsDirty && gLidDrawFn) {
     gLidDrawFn(*gSkin, frame.lidTop, frame.lidBot, gLastDirty);
+    // víčka zasahují velkou část; zatím full-screen
     addDirty(0, 0, (int16_t)cfg.screenW, (int16_t)cfg.screenH);
   }
 

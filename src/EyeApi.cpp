@@ -3,25 +3,26 @@
 #include <Arduino.h>
 
 #include "config.h"
+#include "sd_manager.h"
 #include "skin_assets.h"
+#include "skin_config.h"
+
+#include "RenderApi.h"
+#include "render_eye.h"
+
 #include "eye_grid.h"
 #include "eye_gaze.h"
 #include "eye_pupil.h"
+#include "LidsApi.h"
 #include "TftManager.h"
 
-#include "AssetsApi.h"
-#include "RenderApi.h"
-#include "EyeFrame.h"
-#include "LidsApi.h"
-
 static SkinAssets gSkin;
+static EyeFrame   gFrame;
 
 static void dieBlink(const char* msg) {
   Serial.println(msg);
-  while (true) { delay(250); }
+  while (true) delay(250);
 }
-
-static EyeFrame gFrame;
 
 namespace EyeApi {
 
@@ -35,21 +36,43 @@ void init() {
   TftManager::init();
   TftManager::showBootScreen();
 
-  if (!AssetsApi::initSd()) dieBlink("[SD] init FAILED");
+  if (!sdInit() || !sdIsReady()) dieBlink("[SD] init FAILED");
   Serial.println("[SD] OK");
 
-  if (!AssetsApi::loadSkin(cfg.skinDir, gSkin)) dieBlink("[skin] scan FAILED");
+  loadSkinConfigIfExists(cfg.skinDir, cfg);
 
-  EyeGrid::build(cfg.screenW / 2, cfg.screenH / 2,
-                 cfg.irisCircleRadiusPx, cfg.stepX, cfg.stepY,
-                 cfg.edgeBands);
+  if (!skinScanDir(gSkin, cfg.skinDir)) dieBlink("[skin] scan FAILED");
+
+  EyeGrid::build(
+    cfg.screenW / 2, cfg.screenH / 2,
+    cfg.irisCircleRadiusPx,
+    cfg.stepX, cfg.stepY,
+    cfg.edgeBands
+  );
 
   EyePupil::init(cfg);
 
+  // ---- Render API ----
   RenderApi::init(gSkin);
   RenderApi::setupRendererFromConfig();
-  if (!RenderApi::loadAssets()) dieBlink("[render] load assets FAILED");
+
+  if (!RenderApi::loadAssets())
+    dieBlink("[render] load assets FAILED");
+
   RenderApi::drawStatic();
+
+  // Hook na kreslení víček
+  RenderApi::setLidDrawFn(
+    [](const SkinAssets& skin,
+       uint16_t lidTop,
+       uint16_t lidBot,
+       const DirtyRect&) {
+      eyeRenderDrawLids(lidTop, lidBot, skin);
+    }
+  );
+
+  // Otevřená víčka vykreslíme JEDNOU jako overlay
+  eyeRenderDrawLids(0, 0, gSkin);
 
   EyeGaze::init(
     cfg.dwellMinMs, cfg.dwellMaxMs,
@@ -59,15 +82,7 @@ void init() {
     cfg.edgeBands, cfg.edgeWeightPct, cfg.edgeSoft
   );
 
-  LidsApi::init();
-
-  gFrame.irisX = (int16_t)EyeGaze::x();
-  gFrame.irisY = (int16_t)EyeGaze::y();
-  gFrame.irisDirty = false;
-
-  gFrame.lidTop = 0;
-  gFrame.lidBot = 0;
-  gFrame.lidsDirty = true; // první průchod víček po bootu
+  memset(&gFrame, 0, sizeof(gFrame));
 
   Serial.println("[READY]");
 }
@@ -75,27 +90,25 @@ void init() {
 void update(uint32_t dtMs) {
   TftManager::showAliveTick(millis());
 
-  // iris – zatím podle existující logiky EyeGaze (millis)
   const uint32_t now = millis();
-  const bool irisChanged = EyeGaze::update(now);
-  if (irisChanged) {
-    gFrame.irisX = (int16_t)EyeGaze::x();
-    gFrame.irisY = (int16_t)EyeGaze::y();
+
+  if (EyeGaze::update(now)) {
+    gFrame.irisX = EyeGaze::x();
+    gFrame.irisY = EyeGaze::y();
     gFrame.irisDirty = true;
   }
 
-  // lids – Patch 9 deterministicky přes dtMs
-  LidsApi::update(dtMs, gFrame);
+  if (cfg.lidsEnabled) {
+    LidsApi::update(dtMs, gFrame);
+  } else {
+    gFrame.lidTop = 0;
+    gFrame.lidBot = 0;
+    gFrame.lidsDirty = false;
+  }
 }
 
 void render() {
-  if (gFrame.irisDirty || gFrame.lidsDirty) {
-    RenderApi::renderFrame(gFrame);
-    gFrame.irisDirty = false;
-    gFrame.lidsDirty = false;
-  }
-
-  // Patch 9: žádné delay(5) – pacing je věc main loop (a/nebo yield)
+  RenderApi::renderFrame(gFrame);
 }
 
 } // namespace EyeApi

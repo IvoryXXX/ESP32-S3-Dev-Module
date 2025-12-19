@@ -4,5 +4,6 @@
 Config cfg;
 
 void applyDefaults() {
+cfg.lidsEnabled = false; // Patch 10 – mrkání zatím vypnuto  
   loadConfigDefaults(cfg);
 }
