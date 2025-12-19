@@ -1,8 +1,9 @@
 #include "RenderApi.h"
 
-#include "render_eye.h"     // interní detail rendereru – sem patří
-#include "skin_assets.h"    // definice SkinAssets
-#include "config.h"         // globální cfg
+#include "render_eye.h"
+#include "skin_assets.h"
+#include "config.h"
+#include "EyeFrame.h"
 
 static const SkinAssets* gSkin = nullptr;
 
@@ -43,6 +44,17 @@ void drawStatic() {
 void drawIris(int16_t irisX, int16_t irisY) {
   if (!gSkin) return;
   eyeRenderDrawIris(irisX, irisY, *gSkin);
+}
+
+// Patch 6: jednotný render entrypoint podle EyeFrame
+void renderFrame(const EyeFrame& frame) {
+  if (!gSkin) return;
+
+  if (frame.irisDirty) {
+    eyeRenderDrawIris(frame.irisX, frame.irisY, *gSkin);
+  }
+
+  // lidsDirty zatím nic nedělá (Patch 7)
 }
 
 } // namespace RenderApi

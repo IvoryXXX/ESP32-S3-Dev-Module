@@ -3,14 +3,15 @@
 #include <Arduino.h>
 
 #include "config.h"
-#include "skin_assets.h"   // SkinAssets
+#include "skin_assets.h"
 #include "eye_grid.h"
 #include "eye_gaze.h"
 #include "eye_pupil.h"
 #include "TftManager.h"
 
-#include "RenderApi.h"     // Patch 4: renderer init/load/draw
-#include "AssetsApi.h"     // Patch 5: SD + skin config + scan
+#include "RenderApi.h"
+#include "AssetsApi.h"
+#include "EyeFrame.h"
 
 static SkinAssets gSkin;
 
@@ -21,13 +22,8 @@ static void dieBlink(const char* msg) {
   }
 }
 
-// Patch 2: stav mezi update() a render()
-struct EyeFrameState {
-  bool changed = false;
-  int16_t irisX = 0;
-  int16_t irisY = 0;
-};
-static EyeFrameState gFrame;
+// Patch 6: oficiální kontrakt frame
+static EyeFrame gFrame;
 
 namespace EyeApi {
 
@@ -41,28 +37,22 @@ void init() {
   TftManager::init();
   TftManager::showBootScreen();
 
-  // Patch 5: SD init přes AssetsApi
   if (!AssetsApi::initSd()) dieBlink("[SD] init FAILED");
   Serial.println("[SD] OK");
 
-  // Patch 5: settings + scan skin assets přes AssetsApi
   if (!AssetsApi::loadSkin(cfg.skinDir, gSkin)) dieBlink("[skin] scan FAILED");
 
-  // init grid z configu (kruh + body)
   EyeGrid::build(cfg.screenW / 2, cfg.screenH / 2,
                  cfg.irisCircleRadiusPx, cfg.stepX, cfg.stepY,
                  cfg.edgeBands);
 
-  // init pupil až PO skin configu (settings.txt může změnit cfg)
   EyePupil::init(cfg);
 
-  // Patch 4: render init/load přes RenderApi
   RenderApi::init(gSkin);
   RenderApi::setupRendererFromConfig();
   if (!RenderApi::loadAssets()) dieBlink("[render] load assets FAILED");
   RenderApi::drawStatic();
 
-  // gaze init
   EyeGaze::init(
     cfg.dwellMinMs, cfg.dwellMaxMs,
     cfg.travelTickMinMs, cfg.travelTickMaxMs,
@@ -71,30 +61,36 @@ void init() {
     cfg.edgeBands, cfg.edgeWeightPct, cfg.edgeSoft
   );
 
-  gFrame.changed = false;
+  // první frame: statika už je, iris zatím není dirty
   gFrame.irisX = (int16_t)EyeGaze::x();
   gFrame.irisY = (int16_t)EyeGaze::y();
+  gFrame.irisDirty = false;
+  gFrame.lidsDirty = false;
 
   Serial.println("[READY]");
 }
 
 void update(uint32_t dtMs) {
-  (void)dtMs; // zachováváme původní chování (čas bere EyeGaze z millis())
+  (void)dtMs;
 
   TftManager::showAliveTick(millis());
 
   const uint32_t now = millis();
-  gFrame.changed = EyeGaze::update(now);
-  if (gFrame.changed) {
+  const bool changed = EyeGaze::update(now);
+
+  if (changed) {
     gFrame.irisX = (int16_t)EyeGaze::x();
     gFrame.irisY = (int16_t)EyeGaze::y();
+    gFrame.irisDirty = true;
   }
 }
 
 void render() {
-  if (gFrame.changed) {
-    RenderApi::drawIris(gFrame.irisX, gFrame.irisY);
-    gFrame.changed = false;
+  // Patch 6: renderer bere jednotný frame kontrakt
+  if (gFrame.irisDirty || gFrame.lidsDirty) {
+    RenderApi::renderFrame(gFrame);
+    gFrame.irisDirty = false;
+    gFrame.lidsDirty = false;
   }
 
   // zachováme pacing jako dřív
