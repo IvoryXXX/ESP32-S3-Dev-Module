@@ -3,14 +3,14 @@
 #include <Arduino.h>
 
 #include "config.h"
-#include "sd_manager.h"
-#include "skin_assets.h"
-#include "skin_config.h"
+#include "skin_assets.h"   // SkinAssets
 #include "eye_grid.h"
 #include "eye_gaze.h"
 #include "eye_pupil.h"
 #include "TftManager.h"
-#include "RenderApi.h"   // Patch 4: renderer init/load/draw jde přes RenderApi
+
+#include "RenderApi.h"     // Patch 4: renderer init/load/draw
+#include "AssetsApi.h"     // Patch 5: SD + skin config + scan
 
 static SkinAssets gSkin;
 
@@ -41,21 +41,19 @@ void init() {
   TftManager::init();
   TftManager::showBootScreen();
 
-  if (!sdInit() || !sdIsReady()) dieBlink("[SD] init FAILED");
+  // Patch 5: SD init přes AssetsApi
+  if (!AssetsApi::initSd()) dieBlink("[SD] init FAILED");
   Serial.println("[SD] OK");
 
-  // pokus načíst /skins/<skin>/settings.txt (když neexistuje, jedeme dál)
-  loadSkinConfigIfExists(cfg.skinDir, cfg);
-
-  // scan assets ve skinu
-  if (!skinScanDir(gSkin, cfg.skinDir)) dieBlink("[skin] scan FAILED");
+  // Patch 5: settings + scan skin assets přes AssetsApi
+  if (!AssetsApi::loadSkin(cfg.skinDir, gSkin)) dieBlink("[skin] scan FAILED");
 
   // init grid z configu (kruh + body)
   EyeGrid::build(cfg.screenW / 2, cfg.screenH / 2,
                  cfg.irisCircleRadiusPx, cfg.stepX, cfg.stepY,
                  cfg.edgeBands);
 
-  // init pupil až PO skin configu
+  // init pupil až PO skin configu (settings.txt může změnit cfg)
   EyePupil::init(cfg);
 
   // Patch 4: render init/load přes RenderApi
