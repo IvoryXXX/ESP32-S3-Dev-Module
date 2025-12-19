@@ -1,24 +1,25 @@
 #include <Arduino.h>
 #include "EyeApi.h"
 
-static uint32_t lastMs = 0;
+static uint32_t gLastMs = 0;
 
 void setup() {
-  Serial.begin(115200);
-  delay(80);
-
-  Serial.println("[BOOT] start");
-
   EyeApi::init();
-
-  lastMs = millis();
+  gLastMs = millis();
 }
 
 void loop() {
-  uint32_t now = millis();
-  uint32_t dt  = now - lastMs;
-  lastMs = now;
+  const uint32_t now = millis();
+  uint32_t dt = now - gLastMs;
+  gLastMs = now;
+
+  // dt clamp – ať se to nerozsype po připojení monitoru / breakpointech
+  if (dt > 100) dt = 100;
 
   EyeApi::update(dt);
   EyeApi::render();
+
+  // Patch 9: žádné pacing přes delay(5)
+  // yield() je bezpečný „dech“ pro RTOS/USB; nedělá pevnou latenci
+  yield();
 }

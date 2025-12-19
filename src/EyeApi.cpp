@@ -67,20 +67,16 @@ void init() {
 
   gFrame.lidTop = 0;
   gFrame.lidBot = 0;
-
-  // Patch 8: vynutíme první průchod víček (i když jsou otevřená)
-  gFrame.lidsDirty = true;
+  gFrame.lidsDirty = true; // první průchod víček po bootu
 
   Serial.println("[READY]");
 }
 
 void update(uint32_t dtMs) {
-  (void)dtMs;
-
   TftManager::showAliveTick(millis());
 
+  // iris – zatím podle existující logiky EyeGaze (millis)
   const uint32_t now = millis();
-
   const bool irisChanged = EyeGaze::update(now);
   if (irisChanged) {
     gFrame.irisX = (int16_t)EyeGaze::x();
@@ -88,7 +84,8 @@ void update(uint32_t dtMs) {
     gFrame.irisDirty = true;
   }
 
-  LidsApi::update(now, gFrame);
+  // lids – Patch 9 deterministicky přes dtMs
+  LidsApi::update(dtMs, gFrame);
 }
 
 void render() {
@@ -98,7 +95,7 @@ void render() {
     gFrame.lidsDirty = false;
   }
 
-  delay(5);
+  // Patch 9: žádné delay(5) – pacing je věc main loop (a/nebo yield)
 }
 
 } // namespace EyeApi
