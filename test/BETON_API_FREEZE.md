@@ -22,8 +22,8 @@ Zastavit rozbíjení projektu při změnách. Zavést stabilní hranice (API) me
 - Commit + tag: v0.3-api-frozen
 
 ## Stav / TODO
-- [ ] EyeApi::init napojit na původní init sekvenci (applyDefaults, TftManager init, SD init, skin load+scan, grid build)
-- [ ] EyeApi::update napojit na gaze update + příprava state
-- [ ] EyeApi::render volá RenderApi::draw
-- [ ] RenderApi::draw volá stávající render funkce
-- [ ] AssetsApi funkce volají sd/skin funkce
+- [1 ] EyeApi::init napojit na původní init sekvenci (applyDefaults, TftManager init, SD init, skin load+scan, grid build)
+- [1 ] EyeApi::update napojit na gaze update + příprava state
+- [ 1] EyeApi::render volá RenderApi::draw
+- [1 ] RenderApi::draw volá stávající render funkce
+- [ 1] AssetsApi funkce volají sd/skin funkce

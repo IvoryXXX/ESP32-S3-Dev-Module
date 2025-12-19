@@ -1,179 +1,166 @@
-# Eye Engine – Roadmap (betonová verze)
+# ESP32 Eye Engine – Roadmap & API Freeze
 
-> Tento dokument je **zdroj pravdy** projektu.
-> Když se ztratí kontext (člověk, AI, únava), **vracíme se sem**.
-> Pokud je něco v rozporu s tímto dokumentem, **platí Roadmapa**.
+Tento dokument je **jediný zdroj pravdy** o stavu projektu.  
+Určuje:
+- co je považováno za hotové a zabetonované
+- jaká pravidla se nesmí porušit
+- v jakém pořadí se mají přidávat další funkce
 
----
-
-## 🧱 Základní filozofie
-
-* Projekt se **betonuje po patchech** – malé, izolované kroky
-* Každý patch:
-
-  * má jasný cíl
-  * **nemění chování**, pokud to není výslovně uvedeno
-  * končí funkčním stavem + commitem
-* Architektura > optimalizace
+Cíl:
+Umožnit další rozšiřování (mrkání, emoce, skiny, senzory)
+bez rozbití renderu a základní funkčnosti oka.
 
 ---
 
-## ✅ Hotové patche (stav: dokončeno)
+## 🟢 AKTUÁLNÍ STAV
 
-### Patch 1 – API freeze
+- Stabilní funkční verze: **Patch 9**
+- Základní pohyb oka: funkční
+- Render pipeline: stabilní
+- EyeApi / RenderApi / EyeFrame: oddělené
+- Mrkání / zavřená víčka: **ZÁMĚRNĚ NEIMPLEMENTOVÁNO**
 
-**Cíl:** Stabilní vstupní bod aplikace
-
-* `main.cpp` volá pouze `EyeApi::init/update/render`
-* Přesun původního setup/loop do EyeApi
-
-**Stav:** hotovo
-
----
-
-### Patch 2 – Oddělení update vs render
-
-**Cíl:** Čisté rozdělení výpočtu a kreslení
-
-* `update()` = logika
-* `render()` = kreslení
-
-**Stav:** hotovo
+Tato verze slouží jako **baseline**.
 
 ---
 
-### Patch 3 – RenderApi (draw)
+## 🔒 ZABETONOVANÉ KONTRAKTY (API FREEZE)
 
-**Cíl:** EyeApi už nekreslí přímo
-
-* Wrapper nad `eyeRenderDraw*`
-
-**Stav:** hotovo
-
----
-
-### Patch 4 – RenderApi (init + load)
-
-**Cíl:** EyeApi nezná renderer interně
-
-* `eyeRenderInit / LoadAssets` přes RenderApi
-
-**Stav:** hotovo
+### 1) main.cpp
+- `main.cpp` nesmí obsahovat žádnou logiku
+- Volá výhradně:
+  - `EyeApi::init()`
+  - `EyeApi::update(dtMs)`
+  - `EyeApi::render()`
 
 ---
 
-### Patch 5 – AssetsApi
+### 2) EyeApi
+**Role:** Orchestrátor stavu oka.
 
-**Cíl:** EyeApi neřeší SD ani skiny
-
-* SD init
-* skin config
-* scan assets
-
-**Stav:** hotovo
+- Skládá kompletní stav do `EyeFrame`
+- Volá jednotlivé subsystémy (Gaze, Pupil, Lids…)
+- Nikdy nekreslí přímo na TFT
+- Neobsahuje renderovací detaily
 
 ---
 
-## 🔜 Plánované patche (pořadí je závazné)
+### 3) EyeFrame (datový kontrakt)
+`EyeFrame` je **jediné rozhraní mezi logikou a rendererem**.
 
-### Patch 6 – FrameState jako kontrakt
+Zabetonovaná pravidla:
+- `irisX`, `irisY`
+  → pozice irisu v pixelech (definice popsána v kódu)
+- `lidTop`, `lidBot`
+  → rozsah **0..1000**
+    - `0` = plně otevřeno
+    - `1000` = plně zavřeno
+- `irisDirty`, `lidsDirty`
+  → indikují nutnost překreslení vrstvy
 
-**Cíl:** Oficiální datový model frame
-
-```cpp
-struct EyeFrame {
-  int16_t irisX, irisY;
-  bool irisDirty;
-  bool lidsDirty;
-};
-```
-
-* EyeApi frame **vytváří**
-* RenderApi frame **spotřebovává**
-
-**Odemkne:**
-
-* debug overlay
-* replay pohybu
-* synchronizaci víček
+Renderer nesmí rozhodovat, *proč* se něco změnilo.
 
 ---
 
-### Patch 7 – LidsApi (víčka)
+### 4) RenderApi
+**Role:** Překlad dat → obraz.
 
-**Cíl:** Víčka jako samostatná logická entita
-
-* `LidsApi::update(dt, gaze)`
-* `LidsApi::applyToFrame(frame)`
-
-**Odemkne:**
-
-* realistické blikání
-* reakci víček na směr pohledu
-* přípravu na servo/mechaniku
+- Jediné místo, které renderuje celý frame
+- Přijímá `EyeFrame`
+- Řídí pořadí vrstev a dirty-rect logiku
+- Neobsahuje žádnou logiku mrkání ani stavů
 
 ---
 
-### Patch 8 – Render passes + dirty rects
+### 5) render_eye.cpp
+**Role:** Low-level kreslení.
 
-**Cíl:** Optimalizace bez chaosu
-
-```cpp
-beginFrame();
-drawBase();
-drawIris();
-drawLids();
-endFrame();
-```
-
-**Odemkne:**
-
-* menší překreslování
-* DMA optimalizace
-* vyšší FPS
+- Obsahuje pouze:
+  - kreslení base
+  - kreslení irisu
+  - kreslení víček
+- Neobsahuje žádnou logiku rozhodování
+- Nikdy neřeší stav oka
 
 ---
 
-### Patch 9 – Deterministický timing
+### 6) Invariant vrstvení (neměnné pravidlo)
 
-**Cíl:** Odstranit implicitní časování
+Pořadí vrstev je pevně dané:
+1. Base (oční bulva)
+2. Iris
+3. Otevřená víčka (overlay)
 
-* žádné `delay()` v logice
-* žádné skryté `millis()`
-* vše přes `dtMs`
-
-**Odemkne:**
-
-* simulaci bez HW
-* testy
-* stabilní chování
+Zakázáno:
+- maskovat iris místo dokreslení overlay
+- kreslit víčka před irisem
 
 ---
 
-### Patch 10 – Hot reload / fallback skin
+## 🧱 STAV BETONOVÁNÍ
 
-**Cíl:** Robustnost
-
-* přepnutí skinu za běhu
-* fallback při chybě
-
----
-
-## 🧠 Zásady další práce
-
-* Když se projekt začne chovat divně:
-
-  1. zkontroluj Roadmapu
-  2. zkontroluj poslední patch
-  3. **nepřeskakuj patche**
-
-* Když AI „ztratí paměť“:
-
-  * pošli jí tento soubor
+### ✅ HOTOVO
+- Oddělení `update()` / `render()`
+- EyeApi jako jediný vstupní bod
+- RenderApi jako jediný renderer
+- EyeFrame jako datový kontrakt
+- Funkční render pipeline
+- Návrat na stabilní Patch 9
 
 ---
 
-## 🧱 Motto projektu
+### 🔧 JEŠTĚ DOBETONOVAT (bez nových funkcí)
 
-> Nejdřív architektura.
-> Optimalizace až když víme, co optimalizujeme.
+1) EyeFrame – dokumentace v kódu  
+   - jasně popsat souřadnice irisu  
+   - jasně popsat význam dirty flagů  
+
+2) Feature flags v configu  
+   - `enableLids`
+   - `enableBlink`
+   - `enableClosedLidsAssets`
+   → defaultně vypnuto, aby nehotové věci neprosakovaly
+
+3) Ownership asset bufferů  
+   - kdo alokuje
+   - kdo uvolňuje
+   - chování při změně skinu
+
+4) Error policy  
+   - chybí base / iris → STOP
+   - chybí víčka → pokračovat bez nich
+
+---
+
+## ⛔ ZAKÁZANÉ (do odvolání)
+
+- Implementace mrkání v `render_eye.cpp`
+- Přímé kreslení mimo RenderApi
+- Přímé volání TFT mimo render subsystém
+- Zavřená víčka bez explicitního povolení v configu
+
+---
+
+## 🔜 BUDOUCÍ FUNKCE (AŽ PO STABILIZACI)
+
+Následující věci nejsou součástí současného betonu:
+
+- `LidsApi` (mrkání, animace víček)
+- Emocionální stavy oka
+- Přepínání skinů za běhu
+- Senzory / tracking
+
+Pravidlo:
+Každá nová funkce musí mít vlastní API
+a pracovat výhradně přes `EyeFrame`.
+
+---
+
+## 🧠 ZÁSADA PRO DALŠÍ VÝVOJ
+
+Render je hloupý.  
+Logika je chytrá.  
+Mezi nimi je EyeFrame.
+
+Pokud by nová změna tuto zásadu porušila,
+jde o chybu návrhu, ne detail k doladění.
